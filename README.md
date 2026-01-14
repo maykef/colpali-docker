@@ -1,77 +1,129 @@
-# ColPali Research Engine (Blackwell-Optimized)
+ColPali Research Engine (Blackwell Optimized)
 
-[![CUDA](https://img.shields.io/badge/CUDA-12.6.2-green.svg)](https://developer.nvidia.com/cuda-toolkit)
-[![PyTorch](https://img.shields.io/badge/PyTorch-Nightly-red.svg)](https://pytorch.org/)
-[![Hardware](https://img.shields.io/badge/Hardware-NVIDIA%20Blackwell-blue.svg)](#hardware-requirements)
+A high-performance, containerized Vision-RAG (Retrieval-Augmented Generation) pipeline engineered specifically for NVIDIA Blackwell architecture (RTX 6000 / sm_120).
 
-A high-performance Vision-RAG pipeline specifically tuned for **NVIDIA Blackwell Architecture (RTX 6000 / sm_120)**. This project leverages `ColPali` for multi-vector document retrieval without the need for manual C++ compilation of Flash Attention kernels.
+This project uses CUDA 12.6 and PyTorch Nightly to provide out-of-the-box compatibility with next-generation GPUs without requiring manual C++ compilation.
 
----
+⸻
 
-## 📂 Project Structure
+Overview
 
-```text
+The ColPali Research Engine is designed for visual document retrieval rather than text-only RAG. It uses ColPali, a vision-language model that performs Late Interaction over document images, enabling accurate retrieval from:
+	•	Tables
+	•	Charts
+	•	Diagrams
+	•	Complex document layouts
+
+This approach overcomes the limitations of traditional OCR-based RAG systems, especially for technical and scientific documents.
+
+⸻
+
+Project Architecture
+
 .
-├── Dockerfile             # Builds the CUDA 12.6 research environment
-├── manage_env.sh          # Script to automate build and volume mounting
-├── index_library.py       # (To be added) PDF scanner and embedding logic
-├── research_engine.py      # (To be added) Query and synthesis interface
-├── .dockerignore          # Prevents large data files from slowing builds
-└── README.md              # Documentation
+├── Dockerfile              # Blackwell-optimized CUDA 12.6 environment
+├── manage_env.sh           # Automation for building and volume mounting
+├── index_library.py        # PDF processing and multi-vector embedding
+├── research_engine.py      # Similarity search and retrieval interface
+├── .dockerignore           # Prevents data bloat during Docker builds
+└── README.md               # Documentation
 
-🛠️ Getting Started
-1. Prerequisites
+⸻
 
-    NVIDIA Driver: Version 560+ recommended.
+Quick Start
 
-    Storage: 8TB NVMe mounted at /mnt/nvme8tb/RAG_Clean.
+Prerequisites
 
-    Tools: Docker and NVIDIA Container Toolkit.
+Host OS
+	•	Linux (Ubuntu 22.04+ recommended)
 
-2. Quick Launch
+GPU
+	•	NVIDIA Blackwell (RTX 6000 / RTX 5090)
+	•	NVIDIA Ada Lovelace (RTX 6000 Ada / RTX 4090)
 
-Run the management script to build the image and launch your research container automatically:
-Bash
+Drivers
+	•	NVIDIA Driver 560 or newer
+
+Storage
+	•	Local data directory (example: /mnt/nvme8tb/RAG_Clean)
+
+⸻
+
+Deployment
+
+Build the Docker image and launch the research node using the provided management script.
+The script automatically mounts your local NVMe directory to /app inside the container.
+
+Commands to run on the host system:
 
 chmod +x manage_env.sh
 ./manage_env.sh
 
-🕹️ Container Management
+⸻
 
-Use these commands from your host terminal to manage the lifecycle of your research node.
-Action	Command
-Enter Shell	docker exec -it colpali-research-node /bin/bash
-Stop Node	docker stop colpali-research-node
-Resume Node	docker start colpali-research-node
-View Status	docker ps -a | grep colpali
-🧪 Hardware Verification
+Container Management
 
-Once inside the container, verify that your Blackwell card is correctly identified and the vision stack is functional:
-Bash
+Run the following commands from the host machine:
+
+Enter container shell
+docker exec -it colpali-research-node /bin/bash
+
+Stop container
+docker stop colpali-research-node
+
+Resume container
+docker start colpali-research-node
+
+View status
+docker ps -a | grep colpali
+
+Delete container
+docker rm -f colpali-research-node
+
+⸻
+
+Usage Instructions
+
+Step 1: Hardware Verification
+
+Inside the container, verify GPU detection and required library bindings (Flash Attention, Qwen-Utils):
 
 python3 check_hw.py
 
-⚖️ Hardware Requirements
+⸻
 
-    GPU: NVIDIA Blackwell (RTX 6000, 5090) or Ada Lovelace.
+Step 2: Index Documents
+	1.	Place PDF files into the mounted NVMe directory.
+	2.	Generate multi-vector embeddings:
 
-    VRAM: 24GB+ (48GB+ recommended for large document batches).
+python3 index_library.py
 
-    Architecture: sm_120 support provided via PyTorch Nightly cu126.
+⸻
 
-📝 License
+Step 3: Research and Query
 
-Distributed under the MIT License. See LICENSE for more information.
+Run a visual similarity search across the indexed document library:
 
+python3 research_engine.py “Find the data on thermal conductivity in the Blackwell whitepaper”
 
----
+⸻
 
-### 💡 Why this format works:
-1.  **Badges:** The little shields at the top immediately tell users that you are using cutting-edge versions (CUDA 12.6/Nightly).
-2.  **File Tree:** The code block with the directory structure helps people understand where to put their data.
-3.  **Command Table:** The table for Stop/Start/Enter makes it impossible to forget the specific Docker names.
-4.  **Syntax Highlighting:** Using ` ```bash ` and ` ```text ` ensures GitHub renders the colors correctly for readability.
+Hardware Requirements
 
+Supported architectures
+	•	sm_120 (Blackwell)
+	•	sm_90 (Hopper)
+	•	sm_89 (Ada Lovelace)
 
+VRAM
+	•	Minimum: 24 GB
+	•	Recommended: 48 GB or more for large-scale indexing
 
-**Now that your documentation is ready, do you want the Python code for `index_library.py` to start populating your 8TB drive with embeddings?**
+Precision
+	•	Uses bfloat16 for optimal performance on Blackwell tensor cores
+
+⸻
+
+License
+
+This project is licensed under the MIT License.
