@@ -1,103 +1,77 @@
-ColPali Research Engine (Blackwell-Optimized)
+# ColPali Research Engine (Blackwell-Optimized)
 
-A high-performance Vision-RAG (Retrieval-Augmented Generation) pipeline optimized for NVIDIA Blackwell Architecture (RTX 6000 / sm_120). This project leverages the latest CUDA 12.6 toolkit and PyTorch Nightly to provide a stable, source-build-free environment for document AI.
-🚀 Key Features
+[![CUDA](https://img.shields.io/badge/CUDA-12.6.2-green.svg)](https://developer.nvidia.com/cuda-toolkit)
+[![PyTorch](https://img.shields.io/badge/PyTorch-Nightly-red.svg)](https://pytorch.org/)
+[![Hardware](https://img.shields.io/badge/Hardware-NVIDIA%20Blackwell-blue.svg)](#hardware-requirements)
 
-    Blackwell Support: Pre-configured for sm_120 GPUs using CUDA 12.6.
+A high-performance Vision-RAG pipeline specifically tuned for **NVIDIA Blackwell Architecture (RTX 6000 / sm_120)**. This project leverages `ColPali` for multi-vector document retrieval without the need for manual C++ compilation of Flash Attention kernels.
 
-    Flash Attention 2: High-speed attention kernels enabled for vision-document processing.
+---
 
-    Vision-RAG Stack: Integrated with colpali-engine, transformers, and qwen-vl-utils.
+## 📂 Project Structure
 
-    Dockerized Workflow: Entire research environment encapsulated for reproducibility.
+```text
+.
+├── Dockerfile             # Builds the CUDA 12.6 research environment
+├── manage_env.sh          # Script to automate build and volume mounting
+├── index_library.py       # (To be added) PDF scanner and embedding logic
+├── research_engine.py      # (To be added) Query and synthesis interface
+├── .dockerignore          # Prevents large data files from slowing builds
+└── README.md              # Documentation
 
-🛠️ Setup & Installation
+🛠️ Getting Started
 1. Prerequisites
 
-    NVIDIA Driver 560+ installed on the host.
+    NVIDIA Driver: Version 560+ recommended.
 
-    Docker and NVIDIA Container Toolkit installed.
+    Storage: 8TB NVMe mounted at /mnt/nvme8tb/RAG_Clean.
 
-    An NVMe drive (recommended) mounted at /mnt/nvme8tb/RAG_Clean.
+    Tools: Docker and NVIDIA Container Toolkit.
 
-2. Initialization
+2. Quick Launch
 
-Clone the repository and run the management script to build the image and launch your first container:
+Run the management script to build the image and launch your research container automatically:
 Bash
 
-git clone https://github.com/YOUR_USERNAME/ColPali-Research-Engine.git
-cd ColPali-Research-Engine
 chmod +x manage_env.sh
 ./manage_env.sh
 
-🕹️ Managing the Docker Container
+🕹️ Container Management
 
-Once the environment is built, use these commands to control your "Research Node."
-How to Enter the Container
-
-If you have already run the setup script and are currently at your host terminal, jump back into the active container:
-Bash
-
-docker exec -it colpali-research-node /bin/bash
-
-How to Stop the Container
-
-To free up GPU memory or pause your work:
-Bash
-
-docker stop colpali-research-node
-
-How to Start a Stopped Container
-
-If you've rebooted your machine or stopped the container previously:
-Bash
-
-docker start colpali-research-node
-# Then enter it:
-docker exec -it colpali-research-node /bin/bash
-
-How to Check Status
-
-To see if your research node is currently running:
-Bash
-
-docker ps -a | grep colpali
-
-📂 Project Structure
-
-    Dockerfile: Reconstructs the optimized CUDA 12.6 environment.
-
-    manage_env.sh: Automation script for building and mounting local data volumes.
-
-    index_library.py: Logic for scanning PDFs and generating multi-vector embeddings.
-
-    research_engine.py: The query interface for document retrieval and synthesis.
-
+Use these commands from your host terminal to manage the lifecycle of your research node.
+Action	Command
+Enter Shell	docker exec -it colpali-research-node /bin/bash
+Stop Node	docker stop colpali-research-node
+Resume Node	docker start colpali-research-node
+View Status	docker ps -a | grep colpali
 🧪 Hardware Verification
 
-Inside the container, run this command to verify that the Blackwell card and all libraries are correctly linked:
+Once inside the container, verify that your Blackwell card is correctly identified and the vision stack is functional:
 Bash
 
 python3 check_hw.py
 
-Expected Output:
+⚖️ Hardware Requirements
 
-    ✅ DEVICE: NVIDIA RTX 6000 Ada (or Blackwell equivalent)
+    GPU: NVIDIA Blackwell (RTX 6000, 5090) or Ada Lovelace.
 
-    ✅ FLASH ATTENTION: LOADED
+    VRAM: 24GB+ (48GB+ recommended for large document batches).
 
-    ✅ QWEN UTILS: LOADED
+    Architecture: sm_120 support provided via PyTorch Nightly cu126.
 
-    ✅ COLPALI ENGINE: READY
+📝 License
 
-Ready to push to GitHub?
+Distributed under the MIT License. See LICENSE for more information.
 
-To finish the setup, simply run these final commands in your folder:
 
-    git init
+---
 
-    git add .
+### 💡 Why this format works:
+1.  **Badges:** The little shields at the top immediately tell users that you are using cutting-edge versions (CUDA 12.6/Nightly).
+2.  **File Tree:** The code block with the directory structure helps people understand where to put their data.
+3.  **Command Table:** The table for Stop/Start/Enter makes it impossible to forget the specific Docker names.
+4.  **Syntax Highlighting:** Using ` ```bash ` and ` ```text ` ensures GitHub renders the colors correctly for readability.
 
-    git commit -m "Initial commit: Blackwell optimized env"
 
-    git push origin main
+
+**Now that your documentation is ready, do you want the Python code for `index_library.py` to start populating your 8TB drive with embeddings?**
