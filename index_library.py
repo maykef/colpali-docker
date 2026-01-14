@@ -1,63 +1,50 @@
-import os
 import torch
+import os
 from tqdm import tqdm
-from PIL import Image
+from colpali_engine.models import ColPali, ColPaliProcessor
 from pdf2image import convert_from_path
-from transformers import AutoProcessor
-from colpali_engine.models import ColPali
-from colpali_engine.utils.torch_utils import get_device
 
-def index_pdfs(directory_path, output_path="embeddings.pt"):
-    # 1. Setup Device (Optimized for Blackwell)
-    device = get_device()
-    print(f"Using device: {device}")
+# Settings for your 96GB VRAM
+MODEL_NAME = "vidore/colpali-v1.2"
+BATCH_SIZE = 16  # Your RTX 6000 can likely handle 32+, but 16 is a safe start
+DPI = 150        # High enough for academic text, low enough for speed
 
-    # 2. Load Model & Processor
-    model_name = "vidore/colpali-v1.2"
-    model = ColPali.from_pretrained(
-        model_name,
-        torch_dtype=torch.bfloat16,
-        device_map=device,
-    ).eval()
+# 1. Load Model (Optimized for Blackwell sm_120)
+print(f"🚀 Loading {MODEL_NAME} into Blackwell GPU...")
+model = ColPali.from_pretrained(
+    MODEL_NAME,
+    torch_dtype=torch.bfloat16,
+    device_map="cuda:0",
+    attn_implementation="flash_attention_2"
+).eval()
+processor = ColPaliProcessor.from_pretrained(MODEL_NAME)
+
+# 2. Find all PDFs in your RAG_Clean folder
+pdf_files = [f for f in os.listdir(".") if f.endswith(".pdf")]
+print(f"📚 Found {len(pdf_files)} papers on NVMe. Starting Indexing...")
+
+for pdf_file in pdf_files:
+    print(f"\n📄 Processing: {pdf_file}")
     
-    processor = AutoProcessor.from_pretrained(model_name)
-
-    # 3. Find PDFs in the mounted NVMe
-    pdf_files = [f for f in os.listdir(directory_path) if f.endswith('.pdf')]
-    if not pdf_files:
-        print(f"No PDFs found in {directory_path}")
-        return
-
-    all_embeddings = []
-
-    print(f"Found {len(pdf_files)} PDFs. Starting indexing...")
-
-    # 4. Processing Loop
-    for pdf_file in tqdm(pdf_files, desc="Processing Documents"):
-        path = os.path.join(directory_path, pdf_file)
+    # Use Threadripper cores to render PDF to images
+    images = convert_from_path(pdf_file, dpi=DPI, thread_count=16)
+    
+    all_page_embeddings = []
+    
+    # Process in batches to stay within VRAM limits
+    for i in tqdm(range(0, len(images), BATCH_SIZE)):
+        batch_images = images[i : i + BATCH_SIZE]
         
-        try:
-            # Convert PDF to Images
-            images = convert_from_path(path)
-            
-            # Process each page
-            for i, image in enumerate(images):
-                with torch.no_grad():
-                    batch_images = processor(images=[image], return_tensors="pt").to(device)
-                    embeddings = model(**batch_images)
-                    all_embeddings.append({
-                        "file": pdf_file,
-                        "page": i,
-                        "embedding": embeddings.cpu()
-                    })
-        except Exception as e:
-            print(f"Error processing {pdf_file}: {e}")
+        with torch.no_grad():
+            # Prep tensors
+            batch_input = processor.process_images(batch_images).to(model.device)
+            # Forward pass (Late Interaction / Multi-Vector)
+            embeddings = model(**batch_input)
+            all_page_embeddings.append(embeddings.cpu())
 
-    # 5. Save results to the NVMe
-    torch.save(all_embeddings, output_path)
-    print(f"✅ Indexing Complete. Saved to {output_path}")
+    # Save embeddings next to the PDF so you never have to process it again
+    output_name = f"{pdf_file}.pt"
+    torch.save(torch.cat(all_page_embeddings, dim=0), output_name)
+    print(f"✅ Saved embeddings to {output_name}")
 
-if __name__ == "__main__":
-    # Ensure this points to your mount inside the container
-    DATA_DIR = "/app" 
-    index_pdfs(DATA_DIR)
+print("\n🔥 All academic papers indexed successfully!")
