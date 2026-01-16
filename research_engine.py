@@ -80,7 +80,7 @@ class ResearchEngine:
         # Load retriever
         retriever = ColPali.from_pretrained(
             RETRIEVER_NAME,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             device_map="cuda:0",
             attn_implementation="flash_attention_2",
             local_files_only=True
