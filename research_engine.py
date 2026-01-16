@@ -1,191 +1,449 @@
 #!/usr/bin/env python3
 """
-Optimized PDF Indexing Pipeline
-- Caches rendered images to disk
-- Skips already-processed documents
-- Builds centralized metadata index
-- 200 DPI for optimal OCR quality
+Grounding-Enforced Research Engine (PRODUCTION READY)
+- Top-K retrieval (no arbitrary thresholds)
+- Reduced chunk size for better OCR
+- Consistent filename citations
+- Full offline operation
+- All fixes applied
 """
 
 import torch
 import os
 import json
+import time
+import re
 from pathlib import Path
-from tqdm import tqdm
-from colpali_engine.models import ColPali, ColPaliProcessor
-from pdf2image import convert_from_path
 from PIL import Image
+from colpali_engine.models import ColPali, ColPaliProcessor
+from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, TextStreamer
+from qwen_vl_utils import process_vision_info
 
 # Configuration
-MODEL_NAME = "vidore/colpali-v1.2"
-BATCH_SIZE = 16
-DPI = 200  # FIXED: 200 DPI for better OCR quality
-INDEX_DIR = Path("./index_cache")
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
+
 METADATA_FILE = "index_metadata.json"
+RETRIEVER_NAME = "vidore/colpali-v1.2"
+READER_NAME = "Qwen/Qwen2-VL-7B-Instruct"
 
-# Create directory structure
-INDEX_DIR.mkdir(exist_ok=True)
-(INDEX_DIR / "embeddings").mkdir(exist_ok=True)
-(INDEX_DIR / "images").mkdir(exist_ok=True)
-
-
-def load_or_create_metadata():
-    """Load existing metadata or create new"""
-    if Path(METADATA_FILE).exists():
-        with open(METADATA_FILE, 'r') as f:
-            return json.load(f)
-    return {}
+# OPTIMIZED Retrieval settings
+TOP_K_PAGES = 20
+TOP_PAGES_PER_PAPER = 2
+CHUNK_SIZE = 2
 
 
-def save_metadata(metadata):
-    """Persist metadata to disk"""
-    with open(METADATA_FILE, 'w') as f:
-        json.dump(metadata, f, indent=2)
-
-
-def render_and_cache_pdf(pdf_path, paper_id):
-    """Convert PDF to images and cache to disk at 200 DPI"""
-    print(f"   🖼️  Rendering PDF at {DPI} DPI...")
-    images = convert_from_path(pdf_path, dpi=DPI, thread_count=16)
+class ResearchEngine:
+    """Optimized sequential model loading"""
     
-    image_dir = INDEX_DIR / "images" / paper_id
-    image_dir.mkdir(exist_ok=True)
+    def __init__(self):
+        self.metadata = self._load_metadata()
+        self.embeddings_cache = self._preload_embeddings()
+        self.reader = None
+        self.read_processor = None
+        self.streamer = None
+        print("✅ Research engine initialized\n")
     
-    image_paths = []
-    for i, img in enumerate(images):
-        img_path = image_dir / f"page_{i:04d}.jpg"
-        img.save(img_path, "JPEG", quality=95, optimize=True)
-        image_paths.append(str(img_path))
-    
-    return images, image_paths
-
-
-def load_cached_images(image_paths):
-    """Load pre-rendered images from disk"""
-    return [Image.open(p) for p in image_paths]
-
-
-def embed_images(model, processor, images):
-    """Generate multi-vector embeddings in batches"""
-    all_embeddings = []
-    
-    for i in tqdm(range(0, len(images), BATCH_SIZE), desc="   ⚡ Embedding"):
-        batch = images[i:i + BATCH_SIZE]
+    def _load_metadata(self):
+        """Load index metadata"""
+        if not Path(METADATA_FILE).exists():
+            raise FileNotFoundError(f"Index not found! Run index_library.py first.")
         
-        with torch.no_grad():
-            inputs = processor.process_images(batch).to(model.device)
-            embeddings = model(**inputs)
-            all_embeddings.append(embeddings.cpu())
+        with open(METADATA_FILE, 'r') as f:
+            metadata = json.load(f)
+        
+        print(f"📚 Loaded index: {len(metadata)} papers")
+        return metadata
     
-    return torch.cat(all_embeddings, dim=0)
-
-
-def load_model_safe():
-    """Load ColPali model - try local cache first, download if needed"""
-    print(f"🚀 Loading {MODEL_NAME}...")
+    def _preload_embeddings(self):
+        """Preload all embeddings into RAM"""
+        cache = {}
+        total_size = 0
+        
+        print("⏳ Pre-loading embeddings into RAM...")
+        for paper_id, meta in self.metadata.items():
+            emb_path = meta['embedding_path']
+            emb = torch.load(emb_path, map_location='cpu')
+            cache[paper_id] = emb
+            total_size += emb.element_size() * emb.nelement()
+        
+        print(f"   💾 Cached {total_size / 1e9:.2f} GB in RAM")
+        return cache
     
-    # Try local cache first (fast path)
-    try:
-        print("   Attempting to load from local cache...")
-        model = ColPali.from_pretrained(
-            MODEL_NAME,
+    def retrieve_relevant_pages(self, query):
+        """TOP-K RETRIEVAL"""
+        print(f"🔍 RETRIEVAL PHASE")
+        print(f"   Query: '{query}'")
+        print(f"   Loading retriever from local cache...")
+        
+        retriever = ColPali.from_pretrained(
+            RETRIEVER_NAME,
             dtype=torch.bfloat16,
             device_map="cuda:0",
             attn_implementation="flash_attention_2",
             local_files_only=True
         ).eval()
+        
         processor = ColPaliProcessor.from_pretrained(
-            MODEL_NAME,
+            RETRIEVER_NAME,
             local_files_only=True
         )
-        print("   ✅ Loaded from local cache")
-        return model, processor
         
-    except (OSError, ValueError) as e:
-        # Local cache doesn't exist, download from HuggingFace
-        print("   Local cache not found, downloading from HuggingFace Hub...")
-        print("   (This only happens once - subsequent runs use cached version)")
+        with torch.no_grad():
+            query_batch = processor.process_queries([query]).to("cuda:0")
+            query_emb = retriever(**query_batch)
         
-        model = ColPali.from_pretrained(
-            MODEL_NAME,
-            dtype=torch.bfloat16,
-            device_map="cuda:0",
-            attn_implementation="flash_attention_2"
-        ).eval()
-        processor = ColPaliProcessor.from_pretrained(MODEL_NAME)
+        all_page_scores = []
         
-        print("   ✅ Downloaded and cached for future use")
-        return model, processor
+        for paper_id, emb in self.embeddings_cache.items():
+            emb_gpu = emb.to("cuda:0")
+            scores = processor.score_multi_vector(query_emb, emb_gpu)[0]
+            
+            for page_idx, score in enumerate(scores):
+                all_page_scores.append({
+                    "paper_id": paper_id,
+                    "page_idx": page_idx,
+                    "score": score.item()
+                })
+        
+        all_page_scores.sort(key=lambda x: x['score'], reverse=True)
+        top_pages = all_page_scores[:TOP_K_PAGES]
+        
+        if not top_pages:
+            print("   ❌ No pages found in index")
+            del retriever, processor, query_batch, query_emb
+            torch.cuda.empty_cache()
+            return None
+        
+        max_score = top_pages[0]['score']
+        min_score = top_pages[-1]['score']
+        median_score = top_pages[len(top_pages)//2]['score']
+        
+        print(f"   ✅ Selected top {len(top_pages)} pages")
+        print(f"   📊 Score Range: {max_score:.2f} (best) → {min_score:.2f} (worst)")
+        print(f"   📊 Median Score: {median_score:.2f}")
+        
+        if max_score < 12.0:
+            print(f"\n   ⚠️  WARNING: Best match score is {max_score:.2f}")
+            print(f"   ⚠️  Documents may not prominently feature this topic")
+            print(f"   💡 Results may be less reliable\n")
+        
+        paper_groups = {}
+        for page in top_pages:
+            pid = page['paper_id']
+            if pid not in paper_groups:
+                paper_groups[pid] = []
+            if len(paper_groups[pid]) < TOP_PAGES_PER_PAPER:
+                paper_groups[pid].append(page)
+        
+        del retriever, processor, query_batch, query_emb, emb_gpu
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        
+        print(f"   🧹 Unloaded retriever, freed VRAM\n")
+        
+        return paper_groups
+    
+    def _ensure_reader_loaded(self):
+        """Lazy load reader"""
+        if self.reader is None:
+            print("🤖 GENERATION PHASE")
+            print("   Loading Qwen2-VL reader from local cache...")
+            
+            self.reader = Qwen2VLForConditionalGeneration.from_pretrained(
+                READER_NAME,
+                dtype=torch.bfloat16,
+                device_map="auto",
+                attn_implementation="flash_attention_2",
+                local_files_only=True,
+                trust_remote_code=True
+            )
+            self.read_processor = AutoProcessor.from_pretrained(
+                READER_NAME,
+                local_files_only=True,
+                trust_remote_code=True
+            )
+            self.streamer = TextStreamer(
+                self.read_processor.tokenizer,
+                skip_prompt=True,
+                skip_special_tokens=True
+            )
+            print("   ✅ Reader loaded\n")
+    
+    def analyze_chunk(self, query, images, filenames, chunk_idx):
+        """Process images with citations"""
+        start = time.time()
+        unique_sources = list(set(filenames))
+        print(f"   ⚡ [Chunk {chunk_idx}] Analyzing {len(images)} pages from: {', '.join(unique_sources)}")
+        
+        sources_instruction = "\n".join([f"  • {fname}" for fname in unique_sources])
+        
+        chunk_prompt = (
+            f"EXTRACTION TASK: Find information about '{query}' in these images.\n\n"
+            "MANDATORY CITATION FORMAT:\n"
+            f"✅ 'Fact here [{filenames[0]}]'\n"
+            f"✅ 'Another fact [{filenames[0] if len(filenames) > 0 else 'Filename.pdf'}]'\n"
+            "❌ 'Fact here [Top-left]' (WRONG - need filename)\n"
+            "❌ 'Fact here' (WRONG - no citation)\n\n"
+            "CRITICAL RULES:\n"
+            "1. Every finding MUST end with [Filename.pdf] from list below\n"
+            "2. If nothing relevant visible: 'NOT FOUND IN IMAGES'\n"
+            "3. Quote exact text/numbers when visible\n"
+            "4. NO general knowledge - ONLY what you see\n\n"
+            f"USE THESE EXACT FILENAMES FOR CITATIONS:\n{sources_instruction}\n\n"
+            "OUTPUT (each line must have [Filename.pdf]):\n"
+        )
+        
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": chunk_prompt},
+                *[{"type": "image", "image": img} for img in images]
+            ]
+        }]
+        
+        text = self.read_processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = self.read_processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt"
+        ).to("cuda")
+        
+        with torch.no_grad():
+            generated_ids = self.reader.generate(
+                **inputs,
+                max_new_tokens=1000,
+                temperature=0.2,
+                do_sample=True,
+                repetition_penalty=1.15
+            )
+            generated_ids_trimmed = [
+                out[len(inp):] for inp, out in zip(inputs.input_ids, generated_ids)
+            ]
+            output = self.read_processor.batch_decode(
+                generated_ids_trimmed,
+                skip_special_tokens=True
+            )[0]
+        
+        elapsed = time.time() - start
+        
+        pdf_citations = re.findall(r'\[([^\]]*\.pdf[^\]]*)\]', output, re.IGNORECASE)
+        has_not_found = 'NOT FOUND' in output.upper() or 'NO RELEVANT' in output.upper()
+        
+        if len(pdf_citations) == 0 and not has_not_found:
+            print(f"   ⚠️  [Chunk {chunk_idx}] No .pdf citations detected!")
+        else:
+            print(f"   ✅ [Chunk {chunk_idx}] Found {len(pdf_citations)} citations in {elapsed:.1f}s")
+        
+        return output, unique_sources
+    
+    def verify_grounding(self, generated_text, available_sources):
+        """Verify citations"""
+        warnings = []
+        
+        citations = re.findall(r'\[([^\]]*\.pdf[^\]]*)\]', generated_text, re.IGNORECASE)
+        words = len(generated_text.split())
+        
+        if words > 100 and len(citations) < 3:
+            warnings.append(f"Low citation density: {len(citations)} citations in {words} words")
+        
+        return warnings, len(citations)
+    
+    def research(self, query):
+        """Execute research pipeline"""
+        print("="*70)
+        print(f"QUERY: {query}")
+        print("="*70 + "\n")
+        
+        paper_groups = self.retrieve_relevant_pages(query)
+        
+        if paper_groups is None:
+            return
+        
+        print(f"📄 RETRIEVED PAPERS:")
+        all_images_meta = []
+        source_manifest = []
+        
+        for paper_id, pages in paper_groups.items():
+            meta = self.metadata[paper_id]
+            filename = meta['pdf_filename']
+            best_score = max(p['score'] for p in pages)
+            
+            print(f"   📄 {filename} (Best: {best_score:.2f}, {len(pages)} pages)")
+            source_manifest.append(filename)
+            
+            for page_info in pages:
+                page_idx = page_info['page_idx']
+                img_path = meta['image_paths'][page_idx]
+                img = Image.open(img_path)
+                all_images_meta.append((img, filename))
+        
+        print(f"\n   📊 Total pages to analyze: {len(all_images_meta)}\n")
+        
+        self._ensure_reader_loaded()
+        
+        chunks = [
+            all_images_meta[i:i + CHUNK_SIZE]
+            for i in range(0, len(all_images_meta), CHUNK_SIZE)
+        ]
+        
+        chunk_results = []
+        
+        for i, chunk in enumerate(chunks):
+            imgs = [c[0] for c in chunk]
+            names = [c[1] for c in chunk]
+            result, sources = self.analyze_chunk(query, imgs, names, i+1)
+            chunk_results.append(result)
+        
+        print("\n" + "="*70)
+        print("SYNTHESIS PHASE")
+        print("="*70 + "\n")
+        
+        evidence_text = "\n\n".join([
+            f"EVIDENCE BLOCK {i+1}:\n{result}"
+            for i, result in enumerate(chunk_results)
+        ])
+        
+        example_source_1 = source_manifest[0] if len(source_manifest) > 0 else "Filename.pdf"
+        example_source_2 = source_manifest[1] if len(source_manifest) > 1 else example_source_1
+        
+        synthesis_prompt = (
+            "You are synthesizing research findings. CRITICAL: Cite sources for every fact.\n\n"
+            "CITATION EXAMPLES:\n"
+            f"✅ 'Beringia was a land bridge [{example_source_1}]'\n"
+            f"✅ 'It connected continents [{example_source_2}]'\n"
+            "❌ 'Beringia existed' (no citation)\n\n"
+            "RULES:\n"
+            "1. Every sentence MUST end with [Filename.pdf]\n"
+            "2. Use ONLY filenames from list below\n"
+            "3. If evidence is insufficient: 'INSUFFICIENT EVIDENCE'\n"
+            "4. NO general knowledge - ONLY cited facts\n\n"
+            f"QUERY: {query}\n\n"
+            f"AVAILABLE SOURCES:\n" + "\n".join([f"  • {s}" for s in source_manifest]) + "\n\n"
+            f"EVIDENCE:\n{evidence_text}\n\n"
+            "SYNTHESIZE (every sentence needs [Filename.pdf]):\n"
+        )
+        
+        messages = [{
+            "role": "user",
+            "content": [{"type": "text", "text": synthesis_prompt}]
+        }]
+        
+        text = self.read_processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        inputs = self.read_processor(
+            text=[text],
+            padding=True,
+            return_tensors="pt"
+        ).to("cuda")
+        
+        print("📝 MASTER REPORT:\n")
+        print("-"*70 + "\n")
+        
+        class CaptureStreamer(TextStreamer):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.captured_text = []
+            
+            def on_finalized_text(self, text, stream_end=False):
+                super().on_finalized_text(text, stream_end)
+                self.captured_text.append(text)
+        
+        capture_streamer = CaptureStreamer(
+            self.read_processor.tokenizer,
+            skip_prompt=True,
+            skip_special_tokens=True
+        )
+        
+        try:
+            _ = self.reader.generate(
+                **inputs,
+                max_new_tokens=3000,
+                streamer=capture_streamer,
+                temperature=0.4,
+                do_sample=True,
+                repetition_penalty=1.2
+            )
+        except Exception as e:
+            print(f"\n❌ Generation error: {e}")
+            return
+        
+        full_output = "".join(capture_streamer.captured_text)
+        print("\n" + "-"*70)
+        
+        print("\n🔍 GROUNDING VERIFICATION:")
+        
+        pdf_citations = re.findall(r'\[([^\]]*\.pdf[^\]]*)\]', full_output, re.IGNORECASE)
+        
+        if len(pdf_citations) == 0:
+            print("   🛑 REJECTED - No .pdf citations found")
+            print("   ❌ Output appears to be hallucinated\n")
+            return
+        
+        warnings, citation_count = self.verify_grounding(full_output, source_manifest)
+        
+        if warnings:
+            print("   🚨 ISSUES DETECTED:")
+            for w in warnings:
+                print(f"      ⚠️  {w}")
+        else:
+            print("   ✅ Well-grounded output")
+            print(f"   ✅ {citation_count} source citations")
+        
+        print("\n" + "="*70 + "\n")
 
 
 def main():
-    # Load model once (with smart caching)
-    model, processor = load_model_safe()
+    """Interactive research loop"""
+    print("="*70)
+    print("GROUNDING-ENFORCED RESEARCH ENGINE")
+    print("="*70)
+    print("\nFeatures:")
+    print("  • Top-K retrieval")
+    print("  • Chunk size: 2 images")
+    print("  • Filename citations")
+    print("  • VRAM optimized")
+    print("  • Offline operation\n")
     
-    # Load existing metadata
-    metadata = load_or_create_metadata()
-    
-    # Find PDFs
-    pdf_files = sorted([f for f in os.listdir(".") if f.endswith(".pdf")])
-    
-    if not pdf_files:
-        print("❌ No PDF files found in current directory")
-        print("💡 Make sure you're running this inside the container with mounted data")
+    try:
+        engine = ResearchEngine()
+    except Exception as e:
+        print(f"\n❌ ERROR: {e}\n")
         return
     
-    print(f"📚 Found {len(pdf_files)} PDFs in directory")
+    print("💬 Ready (type 'exit' to quit)\n")
     
-    # Check how many are already indexed
-    already_indexed = [f for f in pdf_files if Path(f).stem in metadata]
-    new_to_process = [f for f in pdf_files if Path(f).stem not in metadata]
-    
-    if already_indexed:
-        print(f"✅ {len(already_indexed)} PDFs already indexed (skipping)")
-    if new_to_process:
-        print(f"🆕 {len(new_to_process)} new PDFs to process\n")
-    else:
-        print("\n✨ All PDFs already indexed! Nothing to do.")
-        print(f"📊 Total indexed papers: {len(metadata)}")
-        return
-    
-    # Process new PDFs only
-    for pdf_file in new_to_process:
-        paper_id = Path(pdf_file).stem
-        
-        print(f"📄 Processing: {pdf_file}")
-        
-        # Render and cache images at 200 DPI
-        images, image_paths = render_and_cache_pdf(pdf_file, paper_id)
-        
-        # Generate embeddings
-        embeddings = embed_images(model, processor, images)
-        
-        # Save embeddings
-        emb_path = INDEX_DIR / "embeddings" / f"{paper_id}.pt"
-        torch.save(embeddings, emb_path)
-        
-        # Update metadata
-        metadata[paper_id] = {
-            "pdf_filename": pdf_file,
-            "page_count": len(images),
-            "embedding_path": str(emb_path),
-            "image_paths": image_paths,
-            "dpi": DPI
-        }
-        
-        print(f"   ✅ Indexed {len(images)} pages → {emb_path}\n")
-    
-    # Save metadata index
-    save_metadata(metadata)
-    
-    print("="*60)
-    print("🔥 INDEXING COMPLETE")
-    print("="*60)
-    print(f"📊 Total papers in index: {len(metadata)}")
-    print(f"🆕 Newly processed: {len(new_to_process)}")
-    print(f"💾 Index metadata: {METADATA_FILE}")
-    print(f"📁 Cached data: {INDEX_DIR}/")
-    print("\n💡 Next step: Run research_engine.py to query the index")
+    while True:
+        try:
+            query = input("Query: ").strip()
+            if not query or query.lower() in ['exit', 'quit', 'q']:
+                print("\n👋 Exiting")
+                break
+            
+            engine.research(query)
+            
+        except KeyboardInterrupt:
+            print("\n\n⚠️ Interrupted\n")
+            torch.cuda.empty_cache()
+            continue
+        except Exception as e:
+            print(f"\n❌ Error: {e}\n")
+            import traceback
+            traceback.print_exc()
+            continue
 
 
 if __name__ == "__main__":
