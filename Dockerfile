@@ -1,12 +1,13 @@
-# 1. Use the version that identifies Blackwell hardware correctly
+# Use exact same base as original
 FROM nvidia/cuda:12.6.2-devel-ubuntu22.04
 
+# Keep original ENV settings
 ENV DEBIAN_FRONTEND=interactive
 ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# 2. Install system essentials
+# Identical system dependencies
 RUN apt-get update && apt-get install -y \
     python3-pip \
     python3-dev \
@@ -16,16 +17,17 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. Upgrade pip 
+# Upgrade pip
 RUN pip3 install --upgrade pip
 
-# 4. Install PyTorch Nightly - The only version with native sm_120 (Blackwell) support
-RUN pip3 install --no-cache-dir --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu126
+# PyTorch Nightly - EXACT same command
+RUN pip3 install --no-cache-dir --pre torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/nightly/cu126
 
-# 5. Install build helpers
+# Build helpers
 RUN pip3 install packaging setuptools wheel
 
-# 6. Install ColPali + Vision Stack (Including qwen-vl-utils)
+# ColPali + Vision Stack - WITH PROTOBUF
 RUN pip3 install --no-cache-dir \
     colpali-engine \
     transformers \
@@ -35,20 +37,46 @@ RUN pip3 install --no-cache-dir \
     pdf2image \
     qwen-vl-utils \
     sentencepiece \
-    pillow
+    pillow \
+    tqdm \
+    protobuf
 
-# 7. Install Flash Attention (Uses pre-compiled wheels for this environment)
+# Flash Attention
 RUN pip3 install flash-attn --no-build-isolation
 
-# 8. Create a verification script inside the image
+# PRE-DOWNLOAD ColPali MODEL
+RUN python3 -c "from colpali_engine.models import ColPali, ColPaliProcessor; \
+    print('Downloading ColPali...'); \
+    ColPali.from_pretrained('vidore/colpali-v1.2', torch_dtype='float32', device_map='cpu'); \
+    ColPaliProcessor.from_pretrained('vidore/colpali-v1.2'); \
+    print('✅ ColPali cached')"
+
+# PRE-DOWNLOAD Qwen2-VL MODEL (This is the new addition)
+RUN python3 -c "from transformers import Qwen2VLForConditionalGeneration, AutoProcessor; \
+    print('Downloading Qwen2-VL-7B-Instruct (this takes 5-10 minutes)...'); \
+    Qwen2VLForConditionalGeneration.from_pretrained( \
+        'Qwen/Qwen2-VL-7B-Instruct', \
+        torch_dtype='float32', \
+        device_map='cpu', \
+        trust_remote_code=True \
+    ); \
+    AutoProcessor.from_pretrained( \
+        'Qwen/Qwen2-VL-7B-Instruct', \
+        trust_remote_code=True \
+    ); \
+    print('✅ Qwen2-VL cached')"
+
+# Hardware check script
 RUN echo 'import torch; \
 import flash_attn; \
 import qwen_vl_utils; \
 name = torch.cuda.get_device_name(0); \
-print("-" * 30); \
+vram = torch.cuda.get_device_properties(0).total_memory / 1e9; \
+print("-" * 40); \
 print(f"✅ DEVICE: {name}"); \
+print(f"✅ VRAM: {vram:.1f} GB"); \
 print(f"✅ FLASH ATTENTION: LOADED"); \
 print(f"✅ QWEN UTILS: LOADED"); \
-print("-" * 30)' > check_hw.py
+print("-" * 40)' > check_hw.py
 
 CMD ["python3", "check_hw.py"]
