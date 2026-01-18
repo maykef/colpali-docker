@@ -11,6 +11,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     python3-pip \
     python3-dev \
+    nano \
     git \
     poppler-utils \
     libgl1-mesa-glx \
@@ -27,7 +28,7 @@ RUN pip3 install --no-cache-dir --pre torch torchvision torchaudio \
 # Build helpers
 RUN pip3 install packaging setuptools wheel
 
-# ColPali + Vision Stack - WITH PROTOBUF
+# [cite_start]ColPali + Vision Stack - WITH PROTOBUF [cite: 2]
 RUN pip3 install --no-cache-dir \
     colpali-engine \
     transformers \
@@ -50,21 +51,6 @@ RUN python3 -c "from colpali_engine.models import ColPali, ColPaliProcessor; \
     ColPali.from_pretrained('vidore/colpali-v1.2', torch_dtype='float32', device_map='cpu'); \
     ColPaliProcessor.from_pretrained('vidore/colpali-v1.2'); \
     print('✅ ColPali cached')"
-
-# PRE-DOWNLOAD Qwen2-VL MODEL (This is the new addition)
-RUN python3 -c "from transformers import Qwen2VLForConditionalGeneration, AutoProcessor; \
-    print('Downloading Qwen2-VL-7B-Instruct (this takes 5-10 minutes)...'); \
-    Qwen2VLForConditionalGeneration.from_pretrained( \
-        'Qwen/Qwen2-VL-7B-Instruct', \
-        torch_dtype='float32', \
-        device_map='cpu', \
-        trust_remote_code=True \
-    ); \
-    AutoProcessor.from_pretrained( \
-        'Qwen/Qwen2-VL-7B-Instruct', \
-        trust_remote_code=True \
-    ); \
-    print('✅ Qwen2-VL cached')"
 
 # Hardware check script
 RUN echo 'import torch; \
